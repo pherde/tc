@@ -1,0 +1,28 @@
+# Local notes, not part of the submission
+REPORT.md
+
+# Assignment statement (provided by the employer, not ours to publish)
+kernel-developer-test-assignment.docx.*
+
+# Large binaries: ISOs and RPMs are downloaded or produced, never versioned
+*.iso
+*.rpm
+
+# Build input/output folders used by docker run / the Go tool
+/in/
+/out/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# Go build output
+/bin/
+/build-stream8-kernel
+
+# Editor / tooling
+.vscode/
+.idea/
+.claude/

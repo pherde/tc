@@ -1,0 +1,22 @@
+# CentOS Stream 8 is EOL: mirrorlist.centos.org is gone, packages only live
+# on vault.centos.org. Only the repos needed to build the kernel are listed.
+[baseos]
+name=CentOS Stream 8 - BaseOS (vault)
+baseurl=https://vault.centos.org/8-stream/BaseOS/$basearch/os/
+gpgcheck=1
+enabled=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+
+[appstream]
+name=CentOS Stream 8 - AppStream (vault)
+baseurl=https://vault.centos.org/8-stream/AppStream/$basearch/os/
+gpgcheck=1
+enabled=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+
+[powertools]
+name=CentOS Stream 8 - PowerTools (vault)
+baseurl=https://vault.centos.org/8-stream/PowerTools/$basearch/os/
+gpgcheck=1
+enabled=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
