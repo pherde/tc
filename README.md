@@ -6,7 +6,7 @@ Stream 8 kernel SRPM `kernel-4.18.0-448.el8.src.rpm`.
 | Task | Status | Section |
 |---|---|---|
 | 1. Build the kernel SRPM in Docker | ✅ Done | [Task 1](#task-1--build-the-kernel-srpm-in-docker) |
-| 2. Go build tool | ⏳ Pending | [Task 2](#task-2--go-build-tool) |
+| 2. Go build tool | ✅ Done | [Task 2](#task-2--go-build-tool) |
 | 3. Backport security fixes and rebuild | ⏳ Pending | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
 | 4. Improve and validate a backporting prompt | ⏳ Pending | [Task 4](#task-4--improve-and-validate-a-backporting-prompt) |
 
@@ -17,6 +17,11 @@ docker/
   Dockerfile   CentOS Stream 8 build image (pinned by digest), build deps pre-installed
   vault.repo   BaseOS / AppStream / PowerTools repos on vault.centos.org
   build.sh     container entrypoint: validate SRPM, builddep, rpmbuild, export
+  embed.go     embeds the three files above into the Go tool (Task 2)
+cmd/build-stream8-kernel/   Go tool entry point (Task 2)
+internal/                   Go tool packages: source, runner, verify, clean
+go.mod
+docs/                       evidence (screenshots)
 README.md
 ```
 
@@ -287,7 +292,206 @@ backports that change the exported kernel ABI.
 
 ## Task 2 — Go build tool
 
-_Pending._
+`build-stream8-kernel` runs the Task 1 build end to end: it stages the SRPM,
+makes sure the builder image exists, runs the container, and verifies the
+exported artifacts on the host.
+
+```
+build-stream8-kernel [flags] <src.rpm|url> <outfolder>
+build-stream8-kernel --clean [--dry-run] [folder...]
+```
+
+### Design
+
+- **Docker CLI, not the SDK.** The tool runs `docker` through `os/exec`.
+  It uses only the Go standard library, the commands are the ones documented
+  in Task 1, and `--docker podman` is enough to switch runtimes.
+- **Embedded build context.** `docker/Dockerfile`, `build.sh` and
+  `vault.repo` are compiled into the binary (`go:embed`, `docker/embed.go`).
+  The image tag is derived from their content, for example
+  `stream8-kernel-builder:4d71bb02ac73`. If the image doesn't exist, the tool
+  extracts the context to a temp dir and runs `docker build`. When the
+  Dockerfile or `build.sh` change, the tag changes too, so a stale image is
+  never used by mistake.
+- **Input staging.** The SRPM is downloaded or copied into a private temp
+  dir that is mounted as `/input`. It is always copied, never hard-linked,
+  because the `:Z` SELinux relabel would otherwise change the label of the
+  user's original file.
+- **Safe output.** An outfolder that already holds results (`RPMS/`,
+  `build.log`, `manifest.txt`, `SHA256SUMS`) is refused unless `--force`
+  is given.
+- **Ctrl+C.** Killing `docker run` doesn't stop the container, because bash
+  as PID 1 ignores SIGINT. On SIGINT/SIGTERM the tool runs `docker rm -f` on
+  the container it named.
+- **Host-side verification.** After the build, the tool re-checks every RPM
+  against `SHA256SUMS`, rejects unlisted RPMs, and requires `kernel`,
+  `kernel-core` and `kernel-modules`.
+
+```
+cmd/build-stream8-kernel/   CLI: flags, orchestration, exit codes
+internal/source/            URL vs file, download, copy, sha256
+internal/runner/            docker CLI wrapper: version, image inspect, build, run, rm
+internal/verify/            SHA256SUMS and required-package checks
+internal/clean/             --clean: removes build artifacts only
+docker/embed.go             embedded build context and content-hash image tag
+```
+
+### Build the tool
+
+Requires Go ≥ 1.22 (tested with 1.26):
+
+```sh
+go test ./...
+go build -o bin/build-stream8-kernel ./cmd/build-stream8-kernel
+```
+
+### Usage
+
+From a URL, checking the expected hash:
+
+```sh
+./bin/build-stream8-kernel \
+  --sha256 0e0533ea6d03a7a35f5066e4b2bde617670acb0bcc2d92fe7fd6374109152a87 \
+  https://vault.centos.org/8-stream/BaseOS/Source/SPackages/kernel-4.18.0-448.el8.src.rpm \
+  out/original
+```
+
+From a local file:
+
+```sh
+./bin/build-stream8-kernel kernel-4.18.0-448.el8.src.rpm out/original
+```
+
+The output folder has the same layout as in
+[Task 1, Step 5](#step-5--check-the-artifacts). On success, the tool prints
+the list of RPMs and the build time.
+
+Clean build results:
+
+```sh
+./bin/build-stream8-kernel --clean --dry-run     # list what would be removed from ./out
+./bin/build-stream8-kernel --clean               # clean everything under ./out
+./bin/build-stream8-kernel --clean out/original  # clean only this folder
+```
+
+`--clean` only deletes the artifacts the tool writes (`RPMS/`, `build.log`,
+`manifest.txt`, `toolchain.txt`, `SHA256SUMS`), in the given folder and in
+any result folder nested below it. Other files are kept and listed as
+`kept ... (not a build artifact)`. Folders left empty are removed. A folder
+that doesn't exist is reported and skipped.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--sha256 HEX` | none | expected SHA-256 of the SRPM (file or URL) |
+| `--jobs N` | `nproc` in the container | make parallelism |
+| `--rpmbuild-opts "..."` | lean build (Task 1) | `rpmbuild` options |
+| `--image REF` | content-hash tag | use an existing image instead of the embedded context |
+| `--rebuild-image` | off | rebuild the builder image even if it exists |
+| `--force` | off | write into an outfolder that already has results |
+| `--quiet` | off | don't stream the build output (it is still saved to `build.log`) |
+| `--docker BIN` | `docker` | container CLI |
+| `--clean` | off | clean mode: positional arguments are folders to clean (default `./out`) |
+| `--dry-run` | off | with `--clean`: only list what would be removed |
+
+Flags can come before or after the positional arguments.
+
+### Exit codes
+
+Codes 2–5 are passed through from `build.sh` unchanged.
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | usage error, or outfolder already has results (no `--force`) |
+| 2 | invalid input: file missing or not a valid source RPM |
+| 3 | build dependencies could not be installed |
+| 4 | `rpmbuild` failed (the error shows the last 20 lines of `build.log`) |
+| 5 | exporting artifacts failed |
+| 6 | docker unavailable: CLI missing, daemon down, socket permission, image not found |
+| 7 | download failed (HTTP error, network) or SHA-256 mismatch |
+| 8 | `docker build` of the builder image failed |
+| 9 | host-side verification of the artifacts failed |
+| 10 | `--clean` could not remove some artifacts |
+| 130 | interrupted (Ctrl+C); the container is removed |
+
+### Tests
+
+`go test ./...` covers:
+- URL vs path detection, local copy (never a hard link), download through
+  `httptest`, HTTP 404, checksum mismatch, and cleanup of the staging dir
+  on failure;
+- `SHA256SUMS` verification: OK, tampered RPM, unlisted RPM, missing
+  required package (`kernel-modules-extra` must not count as
+  `kernel-modules`);
+- the embedded context matches `docker/`, the tag format, and that
+  `build.sh` is executable;
+- flag parsing, outfolder protection, and container exit code mapping;
+- `--clean`: a single result folder, a tree with several results plus an
+  unknown file (kept) and an empty folder (removed), a folder without
+  results (untouched), dry run (nothing deleted), and invalid targets.
+
+Smoke tests against the real Docker daemon:
+
+| Scenario | Result |
+|---|---|
+| `-h` | exit 0 |
+| one positional argument | exit 1 |
+| outfolder with `build.log`, no `--force` | exit 1 |
+| missing local file | exit 2 |
+| garbage file named `.src.rpm` | exit 2, from `build.sh` (`SRPM integrity check failed`) |
+| URL returning 404 | exit 7 (`HTTP 404 Not Found`) |
+| wrong `--sha256` | exit 7 (`sha256 mismatch: expected ..., got ...`) |
+| `--docker nodocker` | exit 6 (`"nodocker" not found in PATH`) |
+| `--image nosuch:tag` | exit 6 |
+| SIGINT during the build | container removed, none left in `docker ps -a` |
+| first run with a new tag | `docker build` from the embedded context (layers cached) |
+| `--clean --dry-run` on `out/` | `would remove 10 artifacts (276.2 MiB), 3 empty folders`, nothing deleted |
+| `--clean` on the smoke-test folder | build logs removed, unrelated files kept, empty folders removed |
+| `--clean /nonexistent` | `does not exist, nothing to clean`, exit 0 |
+| `--dry-run` without `--clean` | exit 1 |
+
+The original file's SELinux label was checked to be unchanged after a run.
+
+### End-to-end result (URL input)
+
+```sh
+./bin/build-stream8-kernel \
+  --sha256 0e0533ea6d03a7a35f5066e4b2bde617670acb0bcc2d92fe7fd6374109152a87 \
+  https://vault.centos.org/8-stream/BaseOS/Source/SPackages/kernel-4.18.0-448.el8.src.rpm \
+  out/tool-url
+```
+
+```
+Build succeeded: kernel-4.18.0-448.el8
+Output: /home/fernando/Downloads/tuxcare/out/tool-url
+  RPMS/x86_64/kernel-4.18.0-448.el8.x86_64.rpm                    9.2 MiB
+  RPMS/x86_64/kernel-core-4.18.0-448.el8.x86_64.rpm              41.2 MiB
+  RPMS/x86_64/kernel-devel-4.18.0-448.el8.x86_64.rpm             22.6 MiB
+  RPMS/x86_64/kernel-headers-4.18.0-448.el8.x86_64.rpm           10.5 MiB
+  RPMS/x86_64/kernel-modules-4.18.0-448.el8.x86_64.rpm           33.9 MiB
+  RPMS/x86_64/kernel-modules-extra-4.18.0-448.el8.x86_64.rpm      9.9 MiB
+  RPMS/x86_64/kernel-modules-internal-4.18.0-448.el8.x86_64.rpm    9.5 MiB
+SHA256SUMS verified for 7 RPMs. rpmbuild: 1406s, total: 24m55s
+```
+
+- The downloaded SRPM matched the expected SHA-256. The existing image
+  (`stream8-kernel-builder:4d71bb02ac73`) was reused.
+- The exported files are owned by the invoking user (uid/gid 1000).
+- Compared with the Task 1 build (`out/original`): the RPM set is the same,
+  and so are the file lists of `kernel-core` and `kernel-modules`. The RPM
+  checksums differ as expected, because the build is not bit-for-bit
+  reproducible (timestamps, and a module signing key generated per build).
+
+### End-to-end result (local SRPM)
+
+```sh
+./bin/build-stream8-kernel kernel-4.18.0-448.el8.src.rpm out
+```
+
+![Local SRPM build: 7 RPMs, SHA256SUMS verified, rpmbuild 1368 s, total 23m13s](docs/task2-local-srpm-build.png)
+
+The same 7 RPMs as the URL build. `SHA256SUMS` was verified on the host.
+`rpmbuild` took 1368 s, 23m13s in total.
 
 ## Task 3 — Backport security fixes and rebuild
 
