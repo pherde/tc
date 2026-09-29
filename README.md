@@ -7,7 +7,7 @@ Stream 8 kernel SRPM `kernel-4.18.0-448.el8.src.rpm`.
 |---|---|---|
 | 1. Build the kernel SRPM in Docker | ✅ Done | [Task 1](#task-1--build-the-kernel-srpm-in-docker) |
 | 2. Go build tool | ✅ Done | [Task 2](#task-2--go-build-tool) |
-| 3. Backport security fixes and rebuild | 🔄 6 of 8 | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
+| 3. Backport security fixes and rebuild | ✅ 8 of 8 (`cvefix8`) | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
 | 4. Improve and validate a backporting prompt | ⏳ Pending | [Task 4](#task-4--improve-and-validate-a-backporting-prompt) |
 
 ## Repository layout
@@ -496,10 +496,14 @@ The same 7 RPMs as the URL build. `SHA256SUMS` was verified on the host.
 
 ## Task 3 — Backport security fixes and rebuild
 
-_In progress: 6 of 8 CVEs backported (`cvefix6`). Proven by a reproducer on
-both kernels: CVE-2025-37797, CVE-2024-26704, CVE-2022-50367. Fix presence
-checked on both kernels: CVE-2024-58072. Code analysis and build only:
-CVE-2023-52835, CVE-2024-50143._
+_All 8 CVEs are backported in `kernel-4.18.0-448.el8.cvefix8`. By level of
+evidence:_
+- _Reproducer that PASSes on `cvefix8` and FAILs (or, for hfsc, panics) on
+  the original kernel:
+  CVE-2025-37797, CVE-2024-26704, CVE-2022-50367, CVE-2022-48757._
+- _Fix presence checked on both kernels: CVE-2024-58072._
+- _Code analysis and build only: CVE-2023-52835, CVE-2024-50143,
+  CVE-2024-36940._
 
 ### How a fix is added to the SRPM
 
@@ -762,6 +766,71 @@ package and appear on both kernels.
 
 The hfsc, ext4 and inode tests were re-run on `cvefix6` as regression
 checks: all `PASS`.
+
+### CVE-2024-36940, CVE-2022-48757 — `cvefix8`
+
+Added together as `Patch1007`-`Patch1009` on top of the six previous
+fixes, with `buildid` renamed to `.cvefix8` (8 CVEs; CVE-2024-36940 takes
+two patches): `kernel-4.18.0-448.el8.cvefix8`.
+
+| Patch | CVE | Upstream | Applies to -448 | Adaptation |
+|---|---|---|---|---|
+| 1007 | CVE-2024-36940 pinctrl: double free in `pinctrl_enable()` | `5038a66dad01` | no | context: -448 has no `pinctrl_free_pindescs()` there |
+| 1008 | dependency of CVE-2024-36940 | `ae1cf4759972` | cleanly | none |
+| 1009 | CVE-2022-48757 `/proc/net/ptype` leak between netns | `47934e06b656` | no (3 files) | **kABI**: the new field uses `RH_KABI_USE(1, ...)` |
+
+**CVE-2024-36940.** `pinctrl_enable()` frees `pctldev` when claiming hogs
+fails. For `devm_pinctrl_register_and_init()` users, devres frees it again.
+The fix removes that free, but on its own it would make `pinctrl_register()`
+leak `pctldev` when `pinctrl_enable()` fails. Upstream fixed this in
+`ae1cf4759972` ("Fixes: 5038a66dad01"), so both are applied. On -448,
+`pinctrl_uninit_controller()` also frees the pin descriptors, which the old
+error path leaked. In the devm path, `pinctrl_unregister()` does
+`list_del()` on a controller that was never added to the list, which is
+safe: `pctldev->node` is set up with `INIT_LIST_HEAD()`. No driver that
+calls `pinctrl_enable()` directly is built for x86_64 on -448 (all 8 are
+ARM or SoC drivers), so on this build the change is limited to the
+`pinctrl_register()` error path.
+
+**CVE-2022-48757.** `struct packet_type` is part of the module interface
+(`dev_add_pack()`). Upstream inserts `struct net *af_packet_net` before
+`af_packet_priv`, which changes the layout and the symbol CRCs. RHEL
+reserves slots at the end of the struct for this, so the field takes
+`RH_KABI_USE(1, struct net *af_packet_net)`. The size and the existing
+offsets don't change, and genksyms still sees the reserved slot. Checked by
+compiling `net/core/dev.o`:
+
+| `struct packet_type` | `__crc_dev_add_pack` | `__crc_dev_remove_pack` |
+|---|---|---|
+| original -448 (`Module.symvers`) | `0x56bf228f` | `0xcaad8e24` |
+| field in `RH_KABI_USE(1)` (this patch) | `0x56bf228f` | `0xcaad8e24` |
+| field placed as upstream does | `0x6c810078` | `0xbfa84b25` |
+
+Iteration check: `rpmbuild -bp` applies 1001-1009, and `drivers/pinctrl/core.o`,
+`net/core/net-procfs.o`, `net/packet/af_packet.o` and `net/core/dev.o`
+build with no new warnings. The full build runs `check-kabi`.
+
+**Tests:**
+- `tests/cve-2022-48757.sh` opens an unbound `AF_PACKET` socket (protocol
+  `0x88b5`) in a new netns. It checks that the socket appears in that
+  netns's `/proc/net/ptype` (the precondition) and not in the initial
+  netns's.
+- CVE-2024-36940 has no runtime test. The error path needs a pin
+  controller whose hogs fail, and the VM has no Intel/AMD pin controller.
+  The fix is validated by code analysis and the build.
+
+The full RPM build of `cvefix8` passed, including `check-kabi`, which the
+build keeps enabled.
+
+| Kernel (AlmaLinux 8.10 VM) | 0x88b5 lines in its own netns | in the initial netns | Result |
+|---|---|---|---|
+| `4.18.0-448.el8.cvefix8` (patched) | 0 → 1 | 0 → 0 | `PASS` |
+| `4.18.0-448.el8` (original) | 0 → 1 | 0 → 1 | `FAIL` |
+
+Regression on `cvefix8`: the hfsc, ext4, inode and rtlwifi tests all
+`PASS`. In the inode test, the first attempt reused an object whose stale
+`a_ops` was already `empty_aops`, so the test retried and decided on the
+second attempt (`shmem_aops` → `empty_aops`).
 
 ## Task 4 — Improve and validate a backporting prompt
 
