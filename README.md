@@ -7,7 +7,7 @@ Stream 8 kernel SRPM `kernel-4.18.0-448.el8.src.rpm`.
 |---|---|---|
 | 1. Build the kernel SRPM in Docker | ✅ Done | [Task 1](#task-1--build-the-kernel-srpm-in-docker) |
 | 2. Go build tool | ✅ Done | [Task 2](#task-2--go-build-tool) |
-| 3. Backport security fixes and rebuild | 🔄 1 of 8 | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
+| 3. Backport security fixes and rebuild | 🔄 2 of 8 | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
 | 4. Improve and validate a backporting prompt | ⏳ Pending | [Task 4](#task-4--improve-and-validate-a-backporting-prompt) |
 
 ## Repository layout
@@ -496,7 +496,7 @@ The same 7 RPMs as the URL build. `SHA256SUMS` was verified on the host.
 
 ## Task 3 — Backport security fixes and rebuild
 
-_In progress: 1 of 8 CVEs done (CVE-2025-37797)._
+_In progress: 2 of 8 CVEs done (CVE-2025-37797, CVE-2024-26704)._
 
 ### How a fix is added to the SRPM
 
@@ -531,6 +531,15 @@ exit
 | `Patch1001: <file>` before `Patch999999` | declares the patch as a package source |
 | `ApplyPatch <file>` in `%prep`, before `ApplyOptionalPatch linux-kernel-test.patch` | applies it with `patch -p1`; `ApplyPatch` refuses patches not declared as `PatchNNNN:` |
 | `%changelog` entry with `{CVE-2025-37797}` | traceability: `rpm -q --changelog kernel-core-...` lists the CVE |
+
+Further fixes go into the same unpacked tree: don't run `rpm -i` again,
+because it overwrites the edited spec. Add the next `PatchNNNN`/`ApplyPatch`
+pair and a new changelog entry, and rename `buildid`.
+
+`ApplyPatch` checks the declaration with `grep -E "^Patch[0-9]+: $patch\$"`,
+so trailing whitespace after the file name on the `PatchNNNN:` line makes
+`%prep` fail with `not listed as a source patch in specfile`. Check with
+`grep -n '[[:space:]]$' SPECS/kernel.spec`.
 
 A single touched file can be compiled in seconds in the `rpmbuild -bp` tree,
 before the ~23 min RPM build:
@@ -578,6 +587,47 @@ hfsc class. Sequence on the original kernel:
 The commit message describes the vttree (link-sharing) variant. This run
 hit the eltree (real-time) variant of the same root cause, and the fix
 covers both, because the re-check guards the whole update block.
+
+### CVE-2024-26704 — ext4: double-free of blocks due to wrong `moved_len`
+
+Fixes are accumulated in one SRPM. This one was added as `Patch1002` on top
+of the hfsc fix, with `buildid` renamed to `.cvefix2`
+(`kernel-4.18.0-448.el8.cvefix2`).
+
+| | |
+|---|---|
+| Upstream fix | `55583e899a53` "ext4: fix double-free of blocks due to wrong extents moved_len" (v6.8) |
+| Dependencies | none |
+| Applies to -448 | cleanly; the pre-fix code is identical |
+| Adaptation | none |
+| Why it is correct on 4.18 | `move_extent_per_page()` returns `replaced_count` (the blocks swapped), which the fix accumulates per iteration; `EXT4_IOC_MOVE_EXT` sets `me.moved_len = 0` after `copy_from_user`, so the early `goto out` paths before the new `*moved_len = 0` never read user data |
+| Note | the divide-by-zero in `mb_update_avg_fragment_size()` quoted in the commit doesn't exist in 4.18 (no such function); the double free itself does (`mballoc.c` "freeing already freed block") |
+
+**Test** (`tests/cve-2024-26704.sh`) exercises the root cause
+deterministically on a 64 MiB ext4 loop image (4 KiB blocks):
+- `orig` has 4 written blocks followed by a hole up to 16 blocks, and
+  `donor` has 16 written blocks;
+- `EXT4_IOC_MOVE_EXT` over 16 blocks swaps blocks 0-3, then hits the hole
+  at EOF and returns `-ENODATA` (the `goto out` inside the loop);
+- the ioctl copies `moved_len` back even on error;
+- moved blocks are counted **independently** of `moved_len`, from `orig`'s
+  logical→physical mapping (`FIBMAP`) before and after. Move-extent is the
+  defrag primitive: it swaps physical blocks and keeps the file content,
+  which is also checked.
+
+| Kernel (AlmaLinux 8.10 VM) | orig physical blocks 0-3 | blocks moved | `moved_len` | Result |
+|---|---|---|---|---|
+| `4.18.0-448.el8.cvefix2` (patched) | `1554-1557` → `1558-1561` (donor's) | 4 | **4** | `PASS` |
+| `4.18.0-448.el8` (original) | `1554-1557` → `2066-2069` (donor's) | 4 | **0** | `FAIL` |
+
+On the original kernel 4 blocks are moved but `moved_len` is 0, so the
+`out:` block skips discarding the preallocations. That is the root cause
+of the double free. `e2fsck` is clean on both kernels, because the test
+does not set up a preallocation overlapping the moved blocks: it proves
+the root cause, not the double-free symptom.
+
+The hfsc test was re-run on `cvefix2` as a regression check:
+`precondition reached`, then `PASS`.
 
 ## Task 4 — Improve and validate a backporting prompt
 
