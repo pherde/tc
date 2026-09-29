@@ -8,7 +8,7 @@ Stream 8 kernel SRPM `kernel-4.18.0-448.el8.src.rpm`.
 | 1. Build the kernel SRPM in Docker | ✅ Done | [Task 1](#task-1--build-the-kernel-srpm-in-docker) |
 | 2. Go build tool | ✅ Done | [Task 2](#task-2--go-build-tool) |
 | 3. Backport security fixes and rebuild | ✅ 8 of 8 (`cvefix8`) | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
-| 4. Improve and validate a backporting prompt | ⏳ Pending | [Task 4](#task-4--improve-and-validate-a-backporting-prompt) |
+| 4. Improve and validate a backporting prompt | ✅ Done | [Task 4](#task-4--improve-and-validate-a-backporting-prompt) |
 
 ## Repository layout
 
@@ -834,4 +834,27 @@ second attempt (`shmem_aops` → `empty_aops`).
 
 ## Task 4 — Improve and validate a backporting prompt
 
-_Pending._
+Everything is in [`task4/`](task4/):
+
+| File | What it is |
+|---|---|
+| [`criteria.md`](task4/criteria.md) | reference answer, run conditions and a 5-criterion rubric, committed before any run |
+| [`context-bundle.md`](task4/context-bundle.md) | the input pasted with both prompts: the mainline patch and the unpatched target function |
+| [`prompt-v1.md`](task4/prompt-v1.md), [`prompt-v2.md`](task4/prompt-v2.md) | the initial and revised prompts; v2 maps each new requirement to a v1 weakness |
+| [`runs/`](task4/runs/) | each answer verbatim, and its score with the checks behind it |
+| [`comparison.md`](task4/comparison.md) | the comparison, the remaining risks and the checks that still need an engineer |
+
+The subject is CVE-2023-52835, whose upstream patch applies cleanly to
+4.18 but needs `>= MAX_ORDER` there. The agent was ChatGPT web, with one
+single-turn temporary chat per prompt.
+
+| | v1 | v2 |
+|---|---|---|
+| Score | 3/10 | 5/10 |
+| Key criterion (4.18 suitability) | 0: `MAX_ORDER` assumed unchanged | 1: 4.18 semantics right, but kept `>` on a wrong timeline |
+| Patch | malformed hunk | applies after whitespace fixing |
+
+The revised prompt improved the analysis and the report, but not the
+backport: both answers keep the wrong bound. The limits of this evidence
+(one run each, web search on in both, the model not identified) are set
+out in `comparison.md`.
