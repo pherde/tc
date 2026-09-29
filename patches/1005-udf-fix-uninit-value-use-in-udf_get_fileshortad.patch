@@ -1,0 +1,60 @@
+From a01bb4905bf779cd171d6129710e21d2befd8a73 Mon Sep 17 00:00:00 2001
+From: Gianfranco Trad <gianf.trad@gmail.com>
+Date: Wed, 25 Sep 2024 09:46:15 +0200
+Subject: [PATCH] udf: fix uninit-value use in udf_get_fileshortad
+
+Check for overflow when computing alen in udf_current_aext to mitigate
+later uninit-value use in udf_get_fileshortad KMSAN bug[1].
+After applying the patch reproducer did not trigger any issue[2].
+
+[1] https://syzkaller.appspot.com/bug?extid=8901c4560b7ab5c2f9df
+[2] https://syzkaller.appspot.com/x/log.txt?x=10242227980000
+
+Reported-by: syzbot+8901c4560b7ab5c2f9df@syzkaller.appspotmail.com
+Closes: https://syzkaller.appspot.com/bug?extid=8901c4560b7ab5c2f9df
+Tested-by: syzbot+8901c4560b7ab5c2f9df@syzkaller.appspotmail.com
+Suggested-by: Jan Kara <jack@suse.com>
+Signed-off-by: Gianfranco Trad <gianf.trad@gmail.com>
+Signed-off-by: Jan Kara <jack@suse.cz>
+Link: https://patch.msgid.link/20240925074613.8475-3-gianf.trad@gmail.com
+
+[ Backport to 4.18.0-448.el8 (CVE-2024-50143): upstream commit
+  264db9d666ad9a35075cc9ed9ec09d021580fbb1. The upstream patch applies
+  cleanly but calls check_add_overflow(size_t, u32, int *). On 4.18,
+  check_add_overflow() requires a, b and *d to have the same type
+  (include/linux/overflow.h), so it would warn about comparing distinct
+  pointer types. The same check is written as an explicit bound: reject
+  lengthAllocDescs > INT_MAX - sizeof(struct allocExtDesc), so alen
+  can't overflow int. The error return stays -1, as in the other
+  failure paths of udf_current_aext() on 4.18. ]
+---
+ fs/udf/inode.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/fs/udf/inode.c b/fs/udf/inode.c
+index 3cceacd16..d239816e3 100644
+--- a/fs/udf/inode.c
++++ b/fs/udf/inode.c
+@@ -2117,12 +2117,16 @@ int8_t udf_current_aext(struct inode *inode, struct extent_position *epos,
+ 		alen = udf_file_entry_alloc_offset(inode) +
+ 							iinfo->i_lenAlloc;
+ 	} else {
++		struct allocExtDesc *header =
++			(struct allocExtDesc *)epos->bh->b_data;
++		u32 len_alloc = le32_to_cpu(header->lengthAllocDescs);
++
+ 		if (!epos->offset)
+ 			epos->offset = sizeof(struct allocExtDesc);
+ 		ptr = epos->bh->b_data + epos->offset;
+-		alen = sizeof(struct allocExtDesc) +
+-			le32_to_cpu(((struct allocExtDesc *)epos->bh->b_data)->
+-							lengthAllocDescs);
++		if (len_alloc > INT_MAX - sizeof(struct allocExtDesc))
++			return -1;
++		alen = sizeof(struct allocExtDesc) + len_alloc;
+ 	}
+ 
+ 	switch (iinfo->i_alloc_type) {
+-- 
+2.52.0
+

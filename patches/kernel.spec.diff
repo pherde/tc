@@ -1,0 +1,70 @@
+--- a/SPECS/kernel.spec
++++ b/SPECS/kernel.spec
+@@ -36,7 +36,7 @@
+ %endif
+ 
+ # define buildid .local
+-
++%define buildid .cvefix8
+ %define rpmversion 4.18.0
+ %define pkgrelease 448.el8
+ 
+@@ -527,6 +527,15 @@
+ ## Patches needed for building this package
+ 
+ # empty final patch to facilitate testing of kernel patches
++Patch1001: 1001-net_sched-hfsc-fix-uaf-in-class-handling.patch
++Patch1002: 1002-ext4-fix-double-free-of-blocks-due-to-wrong-extents-moved_len.patch
++Patch1003: 1003-fs-fix-UAF-GPF-bug-in-nilfs_mdt_destroy.patch
++Patch1004: 1004-perf-core-bail-out-early-if-the-request-AUX-area-is-out-of-bound.patch
++Patch1005: 1005-udf-fix-uninit-value-use-in-udf_get_fileshortad.patch
++Patch1006: 1006-wifi-rtlwifi-remove-unused-check_buddy_priv.patch
++Patch1007: 1007-pinctrl-core-delete-incorrect-free-in-pinctrl_enable.patch
++Patch1008: 1008-pinctrl-core-fix-possible-memory-leak-when-pinctrl_enable-fails.patch
++Patch1009: 1009-net-fix-information-leakage-in-proc-net-ptype.patch
+ Patch999999: linux-kernel-test.patch
+ 
+ # END OF PATCH DEFINITIONS
+@@ -1080,7 +1089,15 @@
+ mv linux-%{rpmversion}-%{pkgrelease} linux-%{KVERREL}
+ 
+ cd linux-%{KVERREL}
+-
++ApplyPatch 1001-net_sched-hfsc-fix-uaf-in-class-handling.patch
++ApplyPatch 1002-ext4-fix-double-free-of-blocks-due-to-wrong-extents-moved_len.patch
++ApplyPatch 1003-fs-fix-UAF-GPF-bug-in-nilfs_mdt_destroy.patch
++ApplyPatch 1004-perf-core-bail-out-early-if-the-request-AUX-area-is-out-of-bound.patch
++ApplyPatch 1005-udf-fix-uninit-value-use-in-udf_get_fileshortad.patch
++ApplyPatch 1006-wifi-rtlwifi-remove-unused-check_buddy_priv.patch
++ApplyPatch 1007-pinctrl-core-delete-incorrect-free-in-pinctrl_enable.patch
++ApplyPatch 1008-pinctrl-core-fix-possible-memory-leak-when-pinctrl_enable-fails.patch
++ApplyPatch 1009-net-fix-information-leakage-in-proc-net-ptype.patch
+ ApplyOptionalPatch linux-kernel-test.patch
+ 
+ # END OF PATCH APPLICATIONS
+@@ -2674,6 +2691,25 @@
+ #
+ #
+ %changelog
++* Tue Sep 29 2026 Fernando Valle <phervalle@gmail.com> [4.18.0-448.el8.cvefix8]
++- net: fix information leakage in /proc/net/ptype (Fernando Valle) {CVE-2022-48757}
++- pinctrl: core: fix possible memory leak when pinctrl_enable() fails (Fernando Valle) {CVE-2024-36940}
++- pinctrl: core: delete incorrect free in pinctrl_enable() (Fernando Valle) {CVE-2024-36940}
++
++* Tue Sep 29 2026 Fernando Valle <phervalle@gmail.com> [4.18.0-448.el8.cvefix6]
++- wifi: rtlwifi: remove unused check_buddy_priv (Fernando Valle) {CVE-2024-58072}
++- udf: fix uninit-value use in udf_get_fileshortad (Fernando Valle) {CVE-2024-50143}
++- perf/core: Bail out early if the request AUX area is out of bound (Fernando Valle) {CVE-2023-52835}
++
++* Mon Sep 28 2026 Fernando Valle <phervalle@gmail.com> [4.18.0-448.el8.cvefix3]
++- fs: fix UAF/GPF bug in nilfs_mdt_destroy (Fernando Valle) {CVE-2022-50367}
++
++* Mon Sep 28 2026 Fernando Valle <phervalle@gmail.com> [4.18.0-448.el8.cvefix2]
++- ext4: fix double-free of blocks due to wrong extents moved_len (Fernando Valle) {CVE-2024-26704}
++
++* Mon Sep 28 2026 Fernando Valle <phervalle@gmail.com> [4.18.0-448.el8.cve37797]
++- net_sched: hfsc: Fix a UAF vulnerability in class handling (Fernando Valle) {CVE-2025-37797}
++
+ * Mon Jan 09 2023 Lucas Zampieri <lzampier@redhat.com> [4.18.0-448.el8]
+ - turbostat: Bring code up-to-date with upstream (Prarit Bhargava) [2117769]
+ - tools/power turbostat: Enable accumulate RAPL display (Prarit Bhargava) [2117769]

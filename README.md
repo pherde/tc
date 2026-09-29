@@ -22,7 +22,10 @@ cmd/build-stream8-kernel/   Go tool entry point (Task 2)
 internal/                   Go tool packages: source, runner, verify, clean
 go.mod
 docs/                       evidence (screenshots, crash logs)
+patches/                    the 9 backport patches and kernel.spec.diff (Task 3)
+scripts/make-patched-srpm.sh  regenerates the patched SRPM from the original (Task 3)
 tests/                      CVE reproducers (Task 3)
+task4/                      prompts, criteria, agent runs and comparison (Task 4)
 README.md
 ```
 
@@ -504,6 +507,41 @@ evidence:_
 - _Fix presence checked on both kernels: CVE-2024-58072._
 - _Code analysis and build only: CVE-2023-52835, CVE-2024-50143,
   CVE-2024-36940._
+
+### Patched SRPM
+
+The result of Task 3 is `kernel-4.18.0-448.el8.cvefix8.src.rpm`, the
+original SRPM plus 9 patches for the 8 CVEs. It was built, installed and
+tested in the VM.
+
+**Download:** [kernel-4.18.0-448.el8.cvefix8.src.rpm](https://drive.google.com/file/d/1jMkq-rk48q2UNvI3U7jtMi6hYByBCpBG/view?usp=sharing) (Google Drive). After downloading, check it with
+`sha256sum kernel-4.18.0-448.el8.cvefix8.src.rpm`.
+
+| | |
+|---|---|
+| File | `kernel-4.18.0-448.el8.cvefix8.src.rpm` (135 MB, not in git) |
+| SHA-256 of the tested file | `853fc8f0552d7e01a386e1bf8a6a3bef6a353a2205bb9d6e3716619521b10789` |
+
+**Regenerate it** from the original SRPM with what is in this repository:
+[`patches/`](patches/), which holds the 9 patches and `kernel.spec.diff`,
+and [`scripts/make-patched-srpm.sh`](scripts/make-patched-srpm.sh):
+
+```sh
+scripts/make-patched-srpm.sh kernel-4.18.0-448.el8.src.rpm out/srpm
+# -> out/srpm/kernel-4.18.0-448.el8.cvefix8.src.rpm
+./bin/build-stream8-kernel out/srpm/kernel-4.18.0-448.el8.cvefix8.src.rpm out/cvefix8
+```
+
+The script checks the original SRPM's SHA-256 and unpacks it in the
+builder container. It adds the patches, applies `kernel.spec.diff` (the
+`buildid`, the `Patch1001`-`Patch1009` and `ApplyPatch` lines, and the
+changelog), checks `%prep` with `rpmbuild -bp`, and writes the SRPM with
+`rpmbuild -bs`. It takes about 30 s.
+
+A regenerated SRPM has a different SHA-256 from the tested one, because
+`rpmbuild` records the build time in the header. Its content is the same:
+unpacking both with `rpm2cpio | cpio` gives identical files (58 of them),
+and only `BUILDTIME` differs.
 
 ### How a fix is added to the SRPM
 
