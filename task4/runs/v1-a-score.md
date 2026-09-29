@@ -1,6 +1,6 @@
 # Score — run v1-a
 
-Scored with `criteria.md` (commit `3bfc733`, made before the run).
+Scored with `criteria.md` (commit `ae716e3`, made before the run).
 
 | Field | Value |
 |---|---|

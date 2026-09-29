@@ -1,7 +1,7 @@
 # Score — run v2-a
 
-Scored with `criteria.md` (commit `3bfc733`, made before both runs). Prompt
-v2 was committed (`082fe0e`) before this run.
+Scored with `criteria.md` (commit `ae716e3`, made before both runs). Prompt
+v2 was committed (`29fbb8f`) before this run.
 
 | Field | Value |
 |---|---|

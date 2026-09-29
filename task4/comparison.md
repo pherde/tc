@@ -6,10 +6,10 @@
 |---|---|
 | CVE | CVE-2023-52835 (perf AUX area bound), backported to `kernel-4.18.0-448.el8` |
 | Why this CVE | the upstream patch applies cleanly and builds, but on 4.18 it must use `>= MAX_ORDER`: a clean `git apply` hides a wrong backport |
-| Criteria | `criteria.md`, committed before any run (`3bfc733`) |
+| Criteria | `criteria.md`, committed before any run (`ae716e3`) |
 | Agent | ChatGPT web, the account's default model (the account has no model picker), temporary chats, one turn each, no follow-ups |
 | Input | `prompt-v1.md` or `prompt-v2.md`, plus the same `context-bundle.md` (mainline patch and the unpatched target function; the target's `MAX_ORDER` definition was left out on purpose) |
-| Runs | v1-a (12:28) and v2-a (12:43), 2026-09-29. Prompt v2 was committed before its run (`082fe0e`) |
+| Runs | v1-a (12:28) and v2-a (12:43), 2026-09-29. Prompt v2 was committed before its run (`29fbb8f`) |
 | Verification | each diff was tried with `patch -p1 --dry-run` on the baseline -448 file, and the change was compiled in the Task 1 builder container. Every claim was checked against the CNA record and the -448 source |
 
 ## Results
