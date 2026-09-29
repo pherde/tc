@@ -7,7 +7,7 @@ Stream 8 kernel SRPM `kernel-4.18.0-448.el8.src.rpm`.
 |---|---|---|
 | 1. Build the kernel SRPM in Docker | ✅ Done | [Task 1](#task-1--build-the-kernel-srpm-in-docker) |
 | 2. Go build tool | ✅ Done | [Task 2](#task-2--go-build-tool) |
-| 3. Backport security fixes and rebuild | 🔄 3 of 8 | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
+| 3. Backport security fixes and rebuild | 🔄 6 of 8 | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
 | 4. Improve and validate a backporting prompt | ⏳ Pending | [Task 4](#task-4--improve-and-validate-a-backporting-prompt) |
 
 ## Repository layout
@@ -496,7 +496,10 @@ The same 7 RPMs as the URL build. `SHA256SUMS` was verified on the host.
 
 ## Task 3 — Backport security fixes and rebuild
 
-_In progress: 3 of 8 CVEs done (CVE-2025-37797, CVE-2024-26704, CVE-2022-50367)._
+_In progress: 6 of 8 CVEs backported (`cvefix6`). Proven by a reproducer on
+both kernels: CVE-2025-37797, CVE-2024-26704, CVE-2022-50367. Fix presence
+checked on both kernels: CVE-2024-58072. Code analysis and build only:
+CVE-2023-52835, CVE-2024-50143._
 
 ### How a fix is added to the SRPM
 
@@ -680,6 +683,85 @@ the nilfs2 crash, which is not built.
 
 The hfsc and ext4 tests were re-run on `cvefix3` as regression checks:
 both `PASS`.
+
+### CVE-2023-52835, CVE-2024-50143, CVE-2024-58072 — `cvefix6`
+
+Added together as `Patch1004`-`Patch1006` on top of the three previous
+fixes, with `buildid` renamed to `.cvefix6` (the SRPM now carries 6 fixes):
+`kernel-4.18.0-448.el8.cvefix6`. Each patch was regenerated on the -448
+tree (`git format-patch`, upstream authorship kept, backport note in the
+message).
+
+| CVE | Upstream fix | Applies to -448 | Adaptation |
+|---|---|---|---|
+| CVE-2023-52835 perf: AUX area out of bound | `54aee5f15b83` (v6.7) | cleanly | **semantic**: `> MAX_ORDER` becomes `>= MAX_ORDER` |
+| CVE-2024-50143 udf: uninit-value in `udf_get_fileshortad` | `264db9d666ad` (v6.12) | cleanly, but **doesn't build** | `check_add_overflow()` replaced by an explicit bound |
+| CVE-2024-58072 rtlwifi: UAF on the global probe list | `2fdac64c3c35` (v6.14) | no (3 files) | context only; removed lines identical to upstream |
+
+**CVE-2023-52835.** `MAX_ORDER` was redefined in v6.4 (`23baf831a32c`).
+On 4.18 it is 11 and exclusive, and `__alloc_pages_nodemask()` warns on
+`order >= MAX_ORDER` (`mm/page_alloc.c:4949`). The upstream check
+`get_order(...) > MAX_ORDER` would still let an order-11 pointer array (a
+2-4 GiB AUX area, such as the commit's own `-m ,4G` example) reach the
+allocator. The 4.19 stable backport kept `>`, with the same off-by-one.
+
+**CVE-2024-50143.** On 4.18, `check_add_overflow()` requires `a`, `b` and
+`*d` to have the same type. Upstream calls it with `size_t`, `u32` and
+`int *`, and the RHEL build uses `-Werror`, so the clean-applying upstream
+patch fails to compile:
+
+```
+./include/linux/overflow.h:54:15: error: comparison of distinct pointer types lacks a cast [-Werror]
+fs/udf/inode.c:2126:7: note: in expansion of macro 'check_add_overflow'
+```
+
+The backport rejects `lengthAllocDescs > INT_MAX - sizeof(struct
+allocExtDesc)` before computing `alen`, which is the same condition, and
+returns `-1`, like the other failure paths of `udf_current_aext()` on 4.18.
+
+**CVE-2024-58072.** -448 still has code upstream no longer has next to the
+changed lines (the "easy concurrent" code in `base.h` and `struct
+rtl_priv`, `read_efuse_byte` in `struct rtl_intf_ops`), so three hunks were
+applied by hand. `rtlpriv->buddy_priv` is kept, as upstream does, because
+the easy concurrent code reads it. `rtl_global_var`, `glb_var`,
+`glb_priv_list` and `rtlpriv->list` are used only in `base.c`, `pci.c` and
+`wifi.h`. No rtlwifi symbol is in the kABI stablelist.
+
+Iteration check: `rpmbuild -bp` applies 1001-1006, and
+`make kernel/events/ring_buffer.o fs/udf/ drivers/net/wireless/realtek/rtlwifi/`
+(181 objects, including every rtlwifi driver) builds with no new warnings
+(only the objtool `synced file ... differs` notices, which the unpatched tree
+also prints).
+
+**Tests:**
+- `tests/cve-2023-52835.sh` runs the commit's reproducer (`perf record -C 0
+  -m ,4G -e intel_pt//`) under bpftrace. It records `rb_alloc_aux()` calls
+  and returns, and any page allocation of order >= 11 by the perf process.
+  It measures the allocation directly, because the `WARN_ON_ONCE` only
+  fires once per boot. It needs Intel PT in the VM (host `kvm_intel
+  pt_mode=1`, QEMU `-cpu host`), otherwise it says `INCONCLUSIVE`.
+- `tests/cve-2024-50143.sh` is a regression test only: it writes, remounts
+  and reads back fragmented files on valid UDF images (short and long
+  allocation descriptors). The overflow path needs a corrupted image, which
+  is not built.
+- `tests/cve-2024-58072.sh` loads rtlwifi, rtl_pci and the 8 PCI drivers,
+  checks that `rtl_global_var` is gone from `/proc/kallsyms`, and unloads
+  them. The failing probe needs Realtek hardware.
+
+| Kernel (AlmaLinux 8.10 VM) | CVE-2024-58072 test |
+|---|---|
+| `4.18.0-448.el8.cvefix6` (patched) | `rtl_global_var` absent, 10 modules load and unload: `PASS` |
+| `4.18.0-448.el8` (original) | `rtl_global_var` present: `FAIL` (expected) |
+
+The CVE-2023-52835 and CVE-2024-50143 tests were not run: the VM has no
+Intel PT, and the UDF test is a regression check only. Those two fixes are
+validated by code analysis and by the build (for 50143, the upstream patch
+does not even compile on 4.18). The `cfg80211: failed to load
+regulatory.db` lines in dmesg come from the missing `wireless-regdb`
+package and appear on both kernels.
+
+The hfsc, ext4 and inode tests were re-run on `cvefix6` as regression
+checks: all `PASS`.
 
 ## Task 4 — Improve and validate a backporting prompt
 
