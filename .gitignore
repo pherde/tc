@@ -12,6 +12,9 @@ kernel-developer-test-assignment.docx.*
 /in/
 /out/
 
+# Task 3 working area: extracted kernel tree and patch work
+/work/
+
 # Logs and temporary files
 *.log
 *.tmp

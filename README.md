@@ -7,7 +7,7 @@ Stream 8 kernel SRPM `kernel-4.18.0-448.el8.src.rpm`.
 |---|---|---|
 | 1. Build the kernel SRPM in Docker | ✅ Done | [Task 1](#task-1--build-the-kernel-srpm-in-docker) |
 | 2. Go build tool | ✅ Done | [Task 2](#task-2--go-build-tool) |
-| 3. Backport security fixes and rebuild | ⏳ Pending | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
+| 3. Backport security fixes and rebuild | 🔄 1 of 8 | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
 | 4. Improve and validate a backporting prompt | ⏳ Pending | [Task 4](#task-4--improve-and-validate-a-backporting-prompt) |
 
 ## Repository layout
@@ -21,7 +21,8 @@ docker/
 cmd/build-stream8-kernel/   Go tool entry point (Task 2)
 internal/                   Go tool packages: source, runner, verify, clean
 go.mod
-docs/                       evidence (screenshots)
+docs/                       evidence (screenshots, crash logs)
+tests/                      CVE reproducers (Task 3)
 README.md
 ```
 
@@ -495,7 +496,88 @@ The same 7 RPMs as the URL build. `SHA256SUMS` was verified on the host.
 
 ## Task 3 — Backport security fixes and rebuild
 
-_Pending._
+_In progress: 1 of 8 CVEs done (CVE-2025-37797)._
+
+### How a fix is added to the SRPM
+
+The SRPM is unpacked in the builder container, so the same `rpm` and
+toolchain are used, then the spec is edited and the SRPM rebuilt:
+
+```sh
+mkdir -p work/manual && cp kernel-4.18.0-448.el8.src.rpm work/manual/
+docker run -it --rm --user builder --entrypoint bash \
+  -v "$PWD/work/manual:/manual:Z" -w /manual stream8-kernel-builder:latest
+
+# inside the container
+echo '%_topdir /manual/rpmbuild' > ~/.rpmmacros
+rpm -i kernel-4.18.0-448.el8.src.rpm            # -> rpmbuild/SPECS, rpmbuild/SOURCES
+cd rpmbuild
+P=1001-net_sched-hfsc-fix-uaf-in-class-handling.patch
+curl -fsSL -o SOURCES/$P \
+  "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/patch/?id=3df275ef0a6ae181e8428a6589ef5d5231e58b5c"
+# edit SPECS/kernel.spec (see the table below), then:
+rpmbuild -bp --target x86_64 SPECS/kernel.spec  # %prep only: the patch applies
+rpmbuild -bs SPECS/kernel.spec                  # -> SRPMS/kernel-4.18.0-448.el8.cve37797.src.rpm
+exit
+
+# on the host
+./bin/build-stream8-kernel \
+  work/manual/rpmbuild/SRPMS/kernel-4.18.0-448.el8.cve37797.src.rpm out/cve37797
+```
+
+| Spec change | Why |
+|---|---|
+| `# define buildid .local` → `%define buildid .cve37797` | release becomes `448.el8.cve37797`: the patched kernel has its own `uname -r` and installs alongside the original |
+| `Patch1001: <file>` before `Patch999999` | declares the patch as a package source |
+| `ApplyPatch <file>` in `%prep`, before `ApplyOptionalPatch linux-kernel-test.patch` | applies it with `patch -p1`; `ApplyPatch` refuses patches not declared as `PatchNNNN:` |
+| `%changelog` entry with `{CVE-2025-37797}` | traceability: `rpm -q --changelog kernel-core-...` lists the CVE |
+
+A single touched file can be compiled in seconds in the `rpmbuild -bp` tree,
+before the ~23 min RPM build:
+
+```sh
+cd BUILD/kernel-4.18.0-448.el8/linux-4.18.0-448.el8.cve37797.x86_64
+cp configs/kernel-4.18.0-x86_64.config .config && make -s olddefconfig
+make -s -j$(nproc) net/sched/sch_hfsc.o     # ~6 s; no new warnings
+```
+
+### CVE-2025-37797 — net_sched: hfsc: UAF in `hfsc_change_class()`
+
+| | |
+|---|---|
+| Upstream fix | `3df275ef0a6a` "net_sched: hfsc: Fix a UAF vulnerability in class handling" (v6.15) |
+| Dependencies | none |
+| Applies to -448 | cleanly; the pre-fix code is identical, and codel/netem (whose peek can drop packets) exist in 4.18 |
+| Adaptation | none |
+| Why it is correct on 4.18 | the fix only re-checks `cl->qdisc->q.qlen` after `qdisc_peek_len()`; both have the same semantics in 4.18 |
+
+**Test** (`tests/cve-2025-37797.sh`): based on upstream tc-testing test
+`a4c3` (commit `7629d1a04ad2`), adapted so that packets really reach the
+hfsc class on 4.18: u32 filters steer traffic (drr drops unclassified
+packets), pings go to non-local addresses (local ones leave through `lo`),
+and integer ping timeouts are used (EL8 iputils). The script checks that the
+bug precondition was reached (the netem queue was non-empty and the peek
+emptied it). If it wasn't, it reports `INCONCLUSIVE`. Both kernels were
+booted with `slub_debug=FZP`, because the RHEL kernel has no KASAN and a
+use-after-free read is otherwise silent.
+
+| Kernel (AlmaLinux 8.10 VM, `slub_debug=FZP`) | Result |
+|---|---|
+| `4.18.0-448.el8.cve37797` (patched) | `precondition reached`, then `PASS`: no kernel errors |
+| `4.18.0-448.el8` (original) | kernel panic, kdump reboot. [Crash log](docs/cve-2025-37797-original-kernel-crash.txt): `general protection fault` in `rb_erase` ← `update_ed` ← `hfsc_change_class`, `RAX: 6b6b6b6b6b6b6b6b` |
+
+`0x6b` is `POISON_FREE`: the kernel followed a pointer read from a freed
+hfsc class. Sequence on the original kernel:
+1. The peek empties the class and `hfsc_qlen_notify()` removes it from the
+   eligible tree.
+2. `hfsc_change_class()` still calls `update_ed()`, which re-inserts the
+   **empty** class.
+3. `tc class del` frees it while it is still linked.
+4. The next `update_ed()` → `rb_erase()` walks the freed node.
+
+The commit message describes the vttree (link-sharing) variant. This run
+hit the eltree (real-time) variant of the same root cause, and the fix
+covers both, because the re-check guards the whole update block.
 
 ## Task 4 — Improve and validate a backporting prompt
 
