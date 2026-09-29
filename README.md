@@ -7,7 +7,7 @@ Stream 8 kernel SRPM `kernel-4.18.0-448.el8.src.rpm`.
 |---|---|---|
 | 1. Build the kernel SRPM in Docker | ✅ Done | [Task 1](#task-1--build-the-kernel-srpm-in-docker) |
 | 2. Go build tool | ✅ Done | [Task 2](#task-2--go-build-tool) |
-| 3. Backport security fixes and rebuild | 🔄 2 of 8 | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
+| 3. Backport security fixes and rebuild | 🔄 3 of 8 | [Task 3](#task-3--backport-security-fixes-and-rebuild) |
 | 4. Improve and validate a backporting prompt | ⏳ Pending | [Task 4](#task-4--improve-and-validate-a-backporting-prompt) |
 
 ## Repository layout
@@ -496,7 +496,7 @@ The same 7 RPMs as the URL build. `SHA256SUMS` was verified on the host.
 
 ## Task 3 — Backport security fixes and rebuild
 
-_In progress: 2 of 8 CVEs done (CVE-2025-37797, CVE-2024-26704)._
+_In progress: 3 of 8 CVEs done (CVE-2025-37797, CVE-2024-26704, CVE-2022-50367)._
 
 ### How a fix is added to the SRPM
 
@@ -628,6 +628,58 @@ the root cause, not the double-free symptom.
 
 The hfsc test was re-run on `cvefix2` as a regression check:
 `precondition reached`, then `PASS`.
+
+### CVE-2022-50367 — fs: uninitialised inode on `security_inode_alloc()` failure
+
+Added as `Patch1003` on top of the two previous fixes, with `buildid`
+renamed to `.cvefix3` (`kernel-4.18.0-448.el8.cvefix3`).
+
+| | |
+|---|---|
+| Upstream fix | `2e488f13755f` "fs: fix UAF/GPF bug in nilfs_mdt_destroy" (v6.0) |
+| Dependencies | none |
+| Applies to -448 | no, context only: RHEL has `inode->rh_reserved2 = 0;` right before the moved call |
+| Adaptation | the patch was regenerated on the -448 tree (`git format-patch`, upstream authorship kept, backport note in the message); the `-`/`+` lines are identical to upstream |
+| Why it is correct on 4.18 | nothing initialised after the old call site depends on `i_security`, and `selinux_inode_alloc_security()` only touches its own blob; on failure `alloc_inode()` calls `->destroy_inode()` directly (not `__destroy_inode()`), so no counter is unbalanced by moving `this_cpu_inc(nr_inodes)` after the call. XFS calls `inode_init_always()` directly: `xfs_inode_alloc()` just frees the object on error, and `xfs_reinit_inode()` now reinitialises the same fields on failure that it always did on success |
+| Impact on -448 | `CONFIG_NILFS2_FS` is off, and a scan of the `->destroy_inode()` implementations under `fs/` found none in this config that reads the uninitialised fields, so the known crash is not reachable here; the fix is applied as hardening of generic VFS code |
+
+Iteration check: `rpmbuild -bp` applies 1001-1003, and `make fs/inode.o`
+builds with no warnings.
+
+**Test** (`tests/cve-2022-50367.sh`) forces the failure with bpftrace:
+the -448 kernel has `CONFIG_BPF_KPROBE_OVERRIDE=y` and BTF, and
+`should_failslab()` is an error-injection point. While the test process is
+inside `security_inode_alloc()` for an inode of a private tmpfs, the only
+slab allocation (the LSM inode blob) returns `-ENOMEM`. The test reads
+`i_data.a_ops` directly from the inode twice:
+- when `shmem_alloc_inode()` returns the slab object (the stale value);
+- when `alloc_inode()` passes the failed inode to `shmem_destroy_inode()`.
+
+A fixed kernel shows `empty_aops` at the second point. An unfixed one still
+shows the stale value (`shmem_aops` of a previous regular file). If the
+stale value is already `empty_aops`, the two can't be told apart, and the
+test says `INCONCLUSIVE`.
+
+Pointers are compared as raw addresses against `/proc/kallsyms`, because
+EL8 bpftrace's `ksym()` only knows text and weak symbols. It names both
+`empty_aops` and `shmem_aops` after the nearest preceding weak symbol, and
+the first run of the test gave a false FAIL on the patched kernel because
+of that.
+
+| Kernel (AlmaLinux 8.10 VM) | `a_ops` before init | `a_ops` at `destroy_inode` | Result |
+|---|---|---|---|
+| `4.18.0-448.el8.cvefix3` (patched) | `shmem_aops` (stale) | `empty_aops` | `PASS` |
+| `4.18.0-448.el8` (original) | `shmem_aops` (stale) | `shmem_aops` (unchanged) | `FAIL` |
+
+Both runs reached the precondition on the first attempt: the failure was
+injected (`security_inode_alloc() = -12`) and the same inode reached
+`shmem_destroy_inode()`. On the original kernel `i_data.host` and
+`i_private` look correct only because the reused object was a tmpfs inode
+too, so `a_ops` is the deciding field. The test proves the root cause, not
+the nilfs2 crash, which is not built.
+
+The hfsc and ext4 tests were re-run on `cvefix3` as regression checks:
+both `PASS`.
 
 ## Task 4 — Improve and validate a backporting prompt
 
